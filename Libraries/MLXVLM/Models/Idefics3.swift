@@ -15,7 +15,6 @@ import MLXNN
 import Tokenizers
 
 // MARK: - Configuration
-
 public struct Idefics3Configuration: Codable, Sendable {
 
     public struct TextConfiguration: Codable, Sendable {

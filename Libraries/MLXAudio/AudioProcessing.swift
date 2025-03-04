@@ -9,8 +9,10 @@ import MLX
 import MLXLMCommon
 
 
-public enum AudioProcessing {
-    
+public enum AudioProcessing {}
+
+// MARK: Interpolation
+extension AudioProcessing {
     public enum AudioInterpolationMode: String {
         case nearest = "nearest"
         case linear = "linear"
@@ -131,4 +133,54 @@ public enum AudioProcessing {
             return output
         }
     }
+}
+
+// MARK: Vocoder helpers
+extension AudioProcessing {
+    
+    public enum NormalizationType: String {
+        case l1 = "L1"
+        case l2 = "L2"
+    }
+    
+    static func getPadding(kernel_size: Int, dilation: Int = 1) -> Int {
+        return Int((kernel_size * dilation - dilation) / 2)
+    }
+    
+    static func computeNorm(x: MLXArray, p: NormalizationType, dim: Int, keepDim: Bool = false) -> MLXArray {
+        let dimensions = [dim]
+        return computeNorm(x: x, p: p, dim: dimensions)
+    }
+    
+    static func computeNorm(x: MLXArray, p: NormalizationType, keepDim: Bool = false) -> MLXArray {
+    let dimensions = Array(0..<x.ndim)
+    return computeNorm(x: x, p: p, dim: dimensions)
+}
+    
+    static func computeNorm(x: MLXArray, p: NormalizationType, dim: [Int], keepDim: Bool = false) -> MLXArray {
+        switch p {
+        case .l1:
+            return MLX.sum(x, axes: dim, keepDims: keepDim)
+        case .l2:
+            return MLX.sqrt(MLX.sum(x * x, axes: dim, keepDims: keepDim))
+        }
+    }
+    
+    static public func weightNorm(weight_v: MLXArray, weight_g: MLXArray, dim: Int? = nil) -> MLXArray {
+        let rank = weight_v.shape.count
+        var axes = Array(0..<rank)
+        if let dim {
+            var modDim = dim
+            if dim < -1 {
+                modDim += rank
+            }
+            if modDim != -1 {
+                axes.remove(at: modDim)
+            }
+        }
+        let norm_v = computeNorm(x: weight_v, p: .l2, dim: axes, keepDim: true)
+        let normalized_weight = weight_v / (norm_v + 1e-7)
+        return normalized_weight * weight_g
+    }
+    
 }
