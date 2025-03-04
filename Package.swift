@@ -14,6 +14,9 @@ let package = Package(
             name: "MLXVLM",
             targets: ["MLXVLM"]),
         .library(
+            name: "MLXAudio",
+            targets: ["MLXAudio"]),
+        .library(
             name: "MLXLMCommon",
             targets: ["MLXLMCommon"]),
         .library(
@@ -67,6 +70,25 @@ let package = Package(
                 .product(name: "Transformers", package: "swift-transformers"),
             ],
             path: "Libraries/MLXVLM",
+            exclude: [
+                "README.md"
+            ],
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .target(
+            name: "MLXAudio",
+            dependencies: [
+                "MLXLMCommon",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXFast", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXOptimizers", package: "mlx-swift"),
+                .product(name: "MLXRandom", package: "mlx-swift"),
+                .product(name: "Transformers", package: "swift-transformers"),
+            ],
+            path: "Libraries/MLXAudio",
             exclude: [
                 "README.md"
             ],
