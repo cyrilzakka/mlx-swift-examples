@@ -7,12 +7,15 @@
 
 import MLX
 import MLXLMCommon
+import Accelerate
+import MLXFFT
 
 
 public enum AudioProcessing {}
 
 // MARK: Interpolation
 extension AudioProcessing {
+    
     public enum AudioInterpolationMode: String {
         case nearest = "nearest"
         case linear = "linear"
@@ -183,4 +186,135 @@ extension AudioProcessing {
         return normalized_weight * weight_g
     }
     
+}
+
+// MARK: STFT and iSTFT
+extension AudioProcessing {
+    public enum WindowType: String {
+        case hann = "hann"
+    }
+    
+    public enum PaddingMode {
+        case constant
+        case edge
+        case reflect
+        
+        var mlxMode: MLX.PadMode? {
+            switch self {
+            case .constant:
+                return .constant
+            case .edge:
+                return .edge
+            case .reflect:
+                return nil
+            }
+        }
+    }
+    
+    static private func pad(_ x: MLXArray, padding: Int, padMode: PaddingMode) -> MLXArray {
+         switch padMode {
+         case .constant:
+             return MLX.padded(x, width: [padding, padding], mode: .constant)
+         case .edge:
+             return MLX.padded(x, width: [padding, padding], mode: .edge)
+         case .reflect:
+             // TODO: if buggy final result, check here second
+             let prefix = x[1 ..< (padding + 1)][.stride(by: -1)]
+            let suffix = x[-(padding + 1) ..< -1][.stride(by: -1)]
+             return concatenated([prefix, x, suffix], axis: 0)
+         }
+     }
+    
+
+    
+    static public func stft(
+        _ x: MLXArray,
+        nFft: Int = 800,
+        hopLength: Int? = nil,
+        winLength: Int? = nil,
+        window: WindowType = .hann,
+        center: Bool = true,
+        padMode: PaddingMode = .reflect
+    ) -> MLXArray {
+        let actualHopLength = hopLength ?? nFft / 4
+        let actualWinLength = winLength ?? nFft
+        var w: MLXArray
+        
+        switch window {
+        case .hann:
+            // TODO: if buggy final result, check here first
+            var hannWindow = [Float](repeating: 0, count: actualWinLength)
+            vDSP_hann_window(&hannWindow, vDSP_Length(actualWinLength), Int32(0))
+            w = MLXArray(hannWindow)
+        }
+        
+        var paddedWindow = w
+        if w.shape[0] < nFft {
+            let padSize = nFft - w.shape[0]
+            paddedWindow = MLX.concatenated([w, MLXArray.zeros([padSize])], axis: 0)
+        }
+
+        var inputX = x
+        if center {
+            inputX = pad(inputX, padding: nFft / 2, padMode: padMode)
+        }
+        let numFrames = 1 + (inputX.shape[0] - nFft) / actualHopLength
+        if numFrames <= 0 {
+            fatalError("Input is too short (length=\(inputX.shape[0])) for nFft=\(nFft) with hopLength=\(actualHopLength) and center=\(center).")
+        }
+        let shape = [numFrames, nFft]
+        let strides = [actualHopLength, 1]
+        let frames = MLX.asStrided(inputX, shape, strides: strides)
+        let spec = MLXFFT.rfft(frames * paddedWindow)
+        return transposed(spec, axes: [1, 0])
+    }
+    
+    static public func istft(
+        _ x: MLXArray,
+        hopLength: Int? = nil,
+        winLength: Int? = nil,
+        window: WindowType = .hann,
+        center: Bool = true,
+        length: Int? = nil
+    ) -> MLXArray {
+        let actualWinLength = winLength ?? (x.shape[1] - 1) * 2
+        let actualHopLength = hopLength ?? actualWinLength / 4
+        
+        // Create window function
+        var w: MLXArray
+        switch window {
+        case .hann:
+            var hannWindow = [Float](repeating: 0, count: actualWinLength)
+            vDSP_hann_window(&hannWindow, vDSP_Length(actualWinLength), Int32(0))
+            w = MLXArray(hannWindow)
+        }
+        
+        // Pad window if needed
+        if w.shape[0] < actualWinLength {
+            w = MLX.concatenated([w, MLXArray.zeros([actualWinLength - w.shape[0]])], axis: 0)
+        }
+
+        let transposedX = transposed(x, axes: [1, 0])
+        let t = (transposedX.shape[0] - 1) * actualHopLength + actualWinLength
+        var reconstructed = MLXArray.zeros([t])
+        let windowSum = MLXArray.zeros([t])
+        for i in 0..<transposedX.shape[0] {
+            let frameTime = MLXFFT.irfft(transposedX[i])
+            let start = i * actualHopLength
+            let end = start + actualWinLength
+
+            let timeSlice = start..<end
+            reconstructed[timeSlice] += frameTime * w
+            windowSum[timeSlice] += w ** 2  // Square of window
+        }
+        reconstructed = MLX.`where`(windowSum .!= 0, reconstructed / windowSum, reconstructed)
+        if center && length == nil {
+            reconstructed = reconstructed[actualWinLength / 2 ..< -actualWinLength / 2]
+        }
+        if let length = length {
+            reconstructed = reconstructed[..<length]
+        }
+        
+        return reconstructed
+    }
 }
