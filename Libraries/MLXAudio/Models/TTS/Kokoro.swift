@@ -280,20 +280,20 @@ private enum Decoder {
                 // Use running statistics
                 var meanShape = Array(repeating: 1, count: input.ndim)
                 meanShape[featureDim] = numFeatures
-                var varShape = meanShape
+                let varShape = meanShape
                 
                 mean = MLX.reshaped(runningMean!, meanShape)
                 variance = MLX.reshaped(runningVar!, varShape)
             }
             
             // Normalize
-            var xNorm = (input - mean) / MLX.sqrt(variance + eps)
+            let xNorm = (input - mean) / MLX.sqrt(variance + eps)
             
             // Apply affine transform if needed
             if affine, let weight = weight, let bias = bias {
                 var weightShape = Array(repeating: 1, count: input.ndim)
                 weightShape[featureDim] = numFeatures
-                var biasShape = weightShape
+                let biasShape = weightShape
                 
                 let reshapedWeight = MLX.reshaped(weight, weightShape)
                 let reshapedBias = MLX.reshaped(bias, biasShape)
@@ -474,6 +474,90 @@ private enum Decoder {
             }
             
             return output
+        }
+    }
+    fileprivate class MLXSTFT: Module {
+        private let filterLength: Int
+        private let hopLength: Int
+        private let winLength: Int
+        private let window: AudioProcessing.WindowType
+        
+        public init(
+            filterLength: Int = 800,
+            hopLength: Int = 200,
+            winLength: Int = 800,
+            window: AudioProcessing.WindowType = .hann
+        ) {
+            self.filterLength = filterLength
+            self.hopLength = hopLength
+            self.winLength = winLength
+            self.window = window
+        }
+        
+        public func transform(_ inputData: MLXArray) -> (MLXArray, MLXArray) {
+            var audioInput = inputData
+            if audioInput.ndim == 1 {
+                audioInput = MLX.expandedDimensions(audioInput, axis: 0)
+            }
+            
+            var magnitudes: [MLXArray] = []
+            var phases: [MLXArray] = []
+            
+            for batchIdx in 0..<audioInput.shape[0] {
+                // Compute STFT
+                let stft = AudioProcessing.stft(
+                    audioInput[batchIdx],
+                    nFft: self.filterLength,
+                    hopLength: self.hopLength,
+                    winLength: self.winLength,
+                    window: self.window,
+                    center: true,
+                    padMode: .reflect
+                )
+                
+                // Get magnitude
+                let magnitude = MLX.abs(stft)
+                
+                // Get phase
+                let phase = AudioProcessing.angle(stft)
+                
+                magnitudes.append(magnitude)
+                phases.append(phase)
+            }
+            
+            // Stack along batch dimension
+            let stackedMagnitudes = MLX.stacked(magnitudes, axis: 0)
+            let stackedPhases = MLX.stacked(phases, axis: 0)
+            
+            return (stackedMagnitudes, stackedPhases)
+        }
+        
+        public func inverse(magnitude: MLXArray, phase: MLXArray) -> MLXArray {
+            let batchSize = magnitude.shape[0]
+            var reconstructed: [MLXArray] = []
+            for batchIdx in 0..<batchSize {
+                let phaseCont = AudioProcessing.unwrap(phase[batchIdx], axis: 1)
+                let real = magnitude[batchIdx] * MLX.cos(phaseCont)
+                let imag = magnitude[batchIdx] * MLX.sin(phaseCont)
+                let stft = real + imag.asImaginary()
+                let audio = AudioProcessing.istft(
+                            stft,
+                            hopLength: self.hopLength,
+                            winLength: self.winLength,
+                            window: self.window,
+                            center: true,
+                            length: nil
+                        )
+                reconstructed.append(audio)
+            }
+            let stacked = MLX.stacked(reconstructed, axis: 0)
+            return MLX.expandedDimensions(stacked, axes: [1])
+        }
+        
+        public func callAsFunction(_ inputData: MLXArray) -> MLXArray {
+            let (magnitude, phase) = self.transform(inputData)
+            let reconstruction = self.inverse(magnitude: magnitude, phase: phase)
+            return MLX.expandedDimensions(reconstruction, axis: -2)
         }
     }
     
